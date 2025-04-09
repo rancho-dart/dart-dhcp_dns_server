@@ -43,3 +43,5 @@ const int DHCP_ACK = 5;
 const int DHCP_NAK = 6;
 const int DHCP_RELEASE = 7;
 const int DHCP_INFORM = 8;
+
+// const int IFNAMSIZ = 16; // Define IFNAMSIZ with an appropriate value

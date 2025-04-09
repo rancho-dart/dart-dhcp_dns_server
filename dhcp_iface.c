@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 // #define IFNAMSIZ 16
 #define MAX_PACKET_SIZE 4096
@@ -24,27 +25,43 @@ struct RawDhcpPacket {
     unsigned char data[MAX_PACKET_SIZE];
 };
 
+
+
+void print_current_time(char * task) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  struct tm *tm_info = localtime(&ts.tv_sec);
+  char time_buffer[64];
+  strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", tm_info);
+
+  printf("Task: %s, Current time: %s.%03ld\n", task, time_buffer, ts.tv_nsec / 1000000);
+}
+
+static int persistent_sockfd_send = -1;
+
 int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
-  int sockfd;
   struct sockaddr_in addr;
   struct ifreq ifr;
 
-  // Create a socket
-  sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
-  if (sockfd < 0) {
-    perror("socket");
-    return -1;
+  if (persistent_sockfd_send == -1) {
+    // Create a socket
+    persistent_sockfd_send = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+    if (persistent_sockfd_send < 0) {
+      perror("socket");
+      return -1;
+    }
   }
 
   // Set the interface to send the packet on
   memset(&ifr, 0, sizeof(ifr));
   strncpy(ifr.ifr_name, dhcp_pkt->iface, IFNAMSIZ - 1);
   printf("Setting interface to %s\n", ifr.ifr_name);
-  if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)) < 0) {
+  if (setsockopt(persistent_sockfd_send, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)) < 0) {
     perror("setsockopt");
-    close(sockfd);
     return -2;
   }
+
   // Create a buffer for the packet, leaving space for Ethernet, IP, and UDP headers
   unsigned char packet[MAX_PACKET_SIZE];
   memset(packet, 0, sizeof(packet));
@@ -58,13 +75,11 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   memcpy(dhcp_data, dhcp_pkt->data, dhcp_pkt->length);
   int packet_length = dhcp_pkt->length + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
   
-  
-  // set up the ethernet header
+  // Set up the Ethernet header
   memcpy(eth_header->h_dest, dhcp_data + 28, ETH_ALEN); // Copy the target MAC address to the destination MAC address
   // Get the MAC address of the interface
-  if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) < 0) {
+  if (ioctl(persistent_sockfd_send, SIOCGIFHWADDR, &ifr) < 0) {
     perror("ioctl");
-    close(sockfd);
     return -3;
   }
   memcpy(eth_header->h_source, ifr.ifr_hwaddr.sa_data, ETH_ALEN); // Set source MAC address
@@ -89,7 +104,6 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   ip_header->saddr = *(uint32_t*)server_ip; // Server IP address
   ip_header->daddr = *(uint32_t*)yiaddr;    // Client IP address (yiaddr)
 
-
   // Calculate the IP checksum
   unsigned short* ip_header_words = (unsigned short*)ip_header;
   unsigned int checksum = 0;
@@ -102,8 +116,8 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   ip_header->check = ~checksum;
 
   // Set up the UDP header
-  udp_header->dest = htons(68);   // Send to dhcp client port   
-  udp_header->source = htons(67); // Send from dhcp server port
+  udp_header->dest = htons(68);   // Send to DHCP client port   
+  udp_header->source = htons(67); // Send from DHCP server port
   udp_header->len = htons(dhcp_pkt->length + sizeof(struct udphdr)); // UDP length
   udp_header->check = 0; // Checksum (optional, can be 0 for UDP over IPv4)
 
@@ -115,86 +129,90 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   device.sll_halen = ETH_ALEN;
   memcpy(device.sll_addr, eth_header->h_dest, ETH_ALEN);
 
-
-  // Update the sendto call to use the sockaddr_ll structure
-  // printf("Sending packet, length: %d\n", packet_length);
   // Send the packet
-  if (sendto(sockfd, packet, packet_length, 0, (struct sockaddr*)&device, sizeof(device)) < 0) {
+  if (sendto(persistent_sockfd_send, packet, packet_length, 0, (struct sockaddr*)&device, sizeof(device)) < 0) {
     perror("sendto");
-    close(sockfd);
     return -4;
   }
 
-  close(sockfd);
   return 0;
 }
 
 void print_in_hex(struct RawDhcpPacket *result);
 
 // Return DHCP packet and the interface name it was received on
-int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
-    int sockfd;
-    struct sockaddr_in addr;
-    struct iovec iov;
-    struct msghdr msg;
-    struct cmsghdr *cmsg;
-    char ctrl_buf[1024];
-    struct in_pktinfo *pktinfo;
+static int persistent_sockfd_recv = -1;
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sockfd < 0) {
-        perror("socket");
-        return -1;
+int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
+  static struct sockaddr_in addr;
+  static char ctrl_buf[1024];
+  struct iovec iov;
+  struct msghdr msg;
+  struct cmsghdr *cmsg;
+  struct in_pktinfo *pktinfo;
+
+  if (persistent_sockfd_recv == -1) {
+    // print_current_time("create socket");
+
+    persistent_sockfd_recv = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (persistent_sockfd_recv < 0) {
+      perror("socket");
+      return -1;
     }
 
+    // print_current_time("set sock opt 1");
     // Allow port reuse for debugging
     int reuse = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    setsockopt(persistent_sockfd_recv, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    // print_current_time("set sock opt 2");
 
     // Enable pktinfo retrieval
     int on = 1;
-    setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
+    setsockopt(persistent_sockfd_recv, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(67);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        close(sockfd);
-        return -2;
+    // print_current_time("bind");
+
+    if (bind(persistent_sockfd_recv, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      perror("bind");
+      close(persistent_sockfd_recv);
+      persistent_sockfd_recv = -1;
+      return -2;
     }
+  }
 
-    memset(&msg, 0, sizeof(msg));
-    memset(result, 0, sizeof(*result));
+  // print_current_time("recvmsg");
 
-    iov.iov_base = result->data;
-    iov.iov_len = MAX_PACKET_SIZE;
+  memset(&msg, 0, sizeof(msg));
+  memset(result, 0, sizeof(*result));
 
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = ctrl_buf;
-    msg.msg_controllen = sizeof(ctrl_buf);
+  iov.iov_base = result->data;
+  iov.iov_len = MAX_PACKET_SIZE;
 
-    if ((result->length = recvmsg(sockfd, &msg, 0)) < 0) {
-        perror("recvmsg");
-        close(sockfd);
-        return -3;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = ctrl_buf;
+  msg.msg_controllen = sizeof(ctrl_buf);
+
+  if ((result->length = recvmsg(persistent_sockfd_recv, &msg, 0)) < 0) {
+    perror("recvmsg");
+    return -3;
+  }
+
+  for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+    if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
+      pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
+      if_indextoname(pktinfo->ipi_ifindex, result->iface);
+      break;
     }
+  }
 
-    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-        if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
-            pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
-            if_indextoname(pktinfo->ipi_ifindex, result->iface);
-            break;
-        }
-    }
-
-    // print_in_hex(result);
-
-    close(sockfd);
-    return 0;
+  return 0;
 }
 
 void print_in_hex(struct RawDhcpPacket *result)

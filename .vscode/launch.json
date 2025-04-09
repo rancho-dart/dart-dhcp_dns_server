@@ -5,7 +5,7 @@
             "name": "Dart",
             "type": "dart",
             "request": "launch",
-            "program": "dhcp_server.dart"
+            "program": "dd_service.dart"
         },
         {
             "name": "C Debug",

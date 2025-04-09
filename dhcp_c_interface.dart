@@ -57,3 +57,5 @@ class DhcpCInterface {
     return _sendDhcpPacket(resultPointer);
   }
 }
+
+final DhcpCInterface dhcpCInterface = DhcpCInterface();
