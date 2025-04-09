@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Dart",
+            "type": "dart",
+            "request": "launch",
+            "program": "dhcp_server.dart"
+        },
+        {
+            "name": "C Debug",
+            "request": "launch",
+            "type": "cppdbg",
+            "program": "${workspaceFolder}/recv_dhcp_iface.so",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": true,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "Build C Program"
+        }
+    ],
+    "compounds": [
+        {
+          "name": "Dart and C Debug",
+          "configurations": ["Dart", "C Debug"]
+        }
+    ]
+}
