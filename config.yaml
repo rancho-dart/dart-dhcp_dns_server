@@ -1,0 +1,17 @@
+interfaces:
+  - name: ens32
+    address_pool: 10.1.0.100-10.1.0.200
+    domain: bj.cn
+    gateway: 10.1.0.1
+    dns_servers:
+      - 10.1.0.1
+      
+  - name: ens37
+    address_pool: 10.0.0.100-10.0.0.200
+    domain: sh.cn
+    gateway: 10.0.0.1
+    dns_servers:
+      - 10.0.0.1
+    static_bindings:
+      - mac: "00:0c:29:f1:65:17"
+        ip: "10.0.0.99"

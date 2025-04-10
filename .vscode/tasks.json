@@ -1,0 +1,38 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build C Program",
+            "type": "shell",
+            "command": "gcc",  // 使用 gcc 编译 C 程序
+            "args": [
+              "-g",  // 添加调试信息
+              "dhcp_iface.c",  // C源文件路径
+              "-O0",  // 优化级别
+              "-fPIC",  // 生成位置无关代码
+              "-shared",  // 生成共享库
+              "-o", "dhcp_iface.so"  // 输出的可执行文件路径
+            ],
+            "group": {
+              "kind": "build",
+              "isDefault": true
+            },
+            "problemMatcher": ["$gcc"],  // 使用 GCC 错误匹配
+            "detail": "Compile the C program"
+          },
+          
+          {
+            "label": "Build Dart",
+            "type": "shell",
+            "command": "dart",
+            "args": ["compile", "exe", "dhcp_server.dart"],
+            "group": {
+              "kind": "build",
+              "isDefault": true
+            },
+            "problemMatcher": [],
+            "detail": "Compile the Dart DHCP server"
+          },
+      ]
+  }
+  
