@@ -100,6 +100,13 @@ Future<Map<String, DhcpPool>> Initialize(String configPath) async {
           throw FormatException('Invalid interface name: $ifaceName');
         }
 
+        // Check if DHCP is enabled for this interface
+        final dhcpEnabled = interface['dhcp_enabled'] as bool? ?? false;
+        if (!dhcpEnabled) {
+          print('DHCP is not enabled for interface: $ifaceName. Skipping...');
+          continue;
+        }
+
         // Validate address pool
         final addressPool = interface['address_pool'] as String;
         if (addressPool.isEmpty) {
@@ -270,4 +277,9 @@ Future<IpAddress> getInterfaceIpInSubnet(String ifaceName, String startIp) async
     }
   }
   throw Exception('No IP address found in the subnet for interface $ifaceName');
+}
+
+Future<void> main() async {
+  // Set up a global error handler to catch and log all uncaught exceptions
+  await dhcpMainFunc();
 }

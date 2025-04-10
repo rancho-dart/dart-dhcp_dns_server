@@ -6,12 +6,25 @@ import 'dart:async';
 import 'dart:io';
 
 import 'dhcp_service.dart';
+import 'dns_service.dart'; // 导入 DNS 服务模块
 
 // It sets up a global error handler to catch and log all uncaught exceptions.
 void main() async {
   // Set up a global error handler to catch and log all uncaught exceptions
   runZonedGuarded(() async {
-    await dhcpMainFunc();
+    // 启动 DHCP 服务的进程
+    final dhcpProcess = await Process.start('dart', ['dhcp_service.dart']);
+    print('DHCP Service started with PID: ${dhcpProcess.pid}');
+
+    // 启动 DNS 服务的进程
+    final dnsProcess = await Process.start('dart', ['dns_service.dart']);
+    print('DNS Service started with PID: ${dnsProcess.pid}');
+
+    // 等待两个进程完成
+    await Future.wait([
+      dhcpProcess.exitCode,
+      dnsProcess.exitCode,
+    ]);
   }, (error, stackTrace) {
     print('Uncaught exception:');
     print('------------------');
