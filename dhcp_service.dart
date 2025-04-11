@@ -21,12 +21,12 @@ Future<void> dhcpMainFunc() async {
   print("Starting DHCP Server...");
 
   // Load configuration from YAML file
-  pools.addAll(await Initialize(CONFIG_FILE_NAME));
+  pools.addAll(await loadDhcpPoolConfig(CONFIG_FILE_NAME));
 
   print("Configuration ${CONFIG_FILE_NAME}|loaded successfully.");
 
   // Allocate memory and call C function
-  final resultPointer = calloc<RawDhcpPacket>();
+  final resultPointer = calloc<RawPacket>();
   try {
     while (true) {
       print('\n===== Waiting for DHCP packet =====');
@@ -83,7 +83,7 @@ Future<void> dhcpMainFunc() async {
   }
 }
 
-Future<Map<String, DhcpPool>> Initialize(String configPath) async {
+Future<Map<String, DhcpPool>> loadDhcpPoolConfig(String configPath) async {
   // 1. Load the YAML configuration file
   final file = File(configPath);
   final yamlString = await file.readAsString();
@@ -101,9 +101,10 @@ Future<Map<String, DhcpPool>> Initialize(String configPath) async {
         }
 
         // Check if DHCP is enabled for this interface
-        final dhcpEnabled = interface['dhcp_enabled'] as bool? ?? false;
+        final direction = interface['direction'] as String? ?? 'uplink';
+        final dhcpEnabled = direction.toLowerCase() == 'downlink';
         if (!dhcpEnabled) {
-          print('DHCP is not enabled for interface: $ifaceName. Skipping...');
+          print('DHCP is not enabled for uplink interface: $ifaceName. Skipping...');
           continue;
         }
 

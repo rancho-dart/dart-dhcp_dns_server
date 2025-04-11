@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,12 +18,16 @@
 // #define IFNAMSIZ 16
 #define MAX_PACKET_SIZE 4096
 
-struct RawDhcpPacket {
-    char iface[IFNAMSIZ];
-    int length;
-    unsigned char data[MAX_PACKET_SIZE];
+struct RawPacket {
+  char iface_name[IFNAMSIZ];
+  int udp_data_length;
+  unsigned char udp_data[MAX_PACKET_SIZE];
 };
 
+static int persistent_sockfd_dhcp_send = -1;
+static int persistent_sockfd_dhcp_recv = -1;
+static int persistent_sockfd_dns_send = -1;
+static int persistent_sockfd_dns_recv = -1;
 
 
 void print_current_time(char * task) {
@@ -38,71 +41,70 @@ void print_current_time(char * task) {
   printf("Task: %s, Current time: %s.%03ld\n", task, time_buffer, ts.tv_nsec / 1000000);
 }
 
-static int persistent_sockfd_send = -1;
-
-int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
-  struct sockaddr_in addr;
+int setup_send_socket(int *sockfd, const char *iface_name) {
   struct ifreq ifr;
 
-  if (persistent_sockfd_send == -1) {
-    // Create a socket
-    persistent_sockfd_send = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
-    if (persistent_sockfd_send < 0) {
+  if (*sockfd == -1) {
+    *sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+    if (*sockfd < 0) {
       perror("socket");
       return -1;
     }
   }
 
-  // Set the interface to send the packet on
   memset(&ifr, 0, sizeof(ifr));
-  strncpy(ifr.ifr_name, dhcp_pkt->iface, IFNAMSIZ - 1);
-  printf("Setting interface to %s\n", ifr.ifr_name);
-  if (setsockopt(persistent_sockfd_send, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)) < 0) {
+  strncpy(ifr.ifr_name, iface_name, IFNAMSIZ - 1);
+  if (setsockopt(*sockfd, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr, sizeof(ifr)) < 0) {
     perror("setsockopt");
     return -2;
   }
 
-  // Create a buffer for the packet, leaving space for Ethernet, IP, and UDP headers
-  unsigned char packet[MAX_PACKET_SIZE];
-  memset(packet, 0, sizeof(packet));
+  return 0;
+}
 
+int send_packet_with_iface(int *sockfd, struct RawPacket* pkt, int dest_port, int src_port) {
+  unsigned char packet[MAX_PACKET_SIZE];
   struct ethhdr* eth_header = (struct ethhdr*)packet;
   struct iphdr* ip_header = (struct iphdr*)(eth_header + 1);
   struct udphdr* udp_header = (struct udphdr*)(ip_header + 1);
-  unsigned char * dhcp_data = (unsigned char *)(udp_header + 1);
-  
-  // Copy the DHCP data into the packet after the Ethernet, IP, and UDP headers
-  memcpy(dhcp_data, dhcp_pkt->data, dhcp_pkt->length);
-  int packet_length = dhcp_pkt->length + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
-  
+  unsigned char *data = (unsigned char *)(udp_header + 1);
+
+  if (setup_send_socket(sockfd, pkt->iface_name) < 0) {
+    return -1;
+  }
+
+  memcpy(data, pkt->udp_data, pkt->udp_data_length);
+  int packet_length = pkt->udp_data_length + sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
+
   // Set up the Ethernet header
-  memcpy(eth_header->h_dest, dhcp_data + 28, ETH_ALEN); // Copy the target MAC address to the destination MAC address
-  // Get the MAC address of the interface
-  if (ioctl(persistent_sockfd_send, SIOCGIFHWADDR, &ifr) < 0) {
+  memcpy(eth_header->h_dest, data + 28, ETH_ALEN); // Copy the target MAC address to the destination MAC address
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(ifr));
+  strncpy(ifr.ifr_name, pkt->iface_name, IFNAMSIZ - 1);
+  if (ioctl(*sockfd, SIOCGIFHWADDR, &ifr) < 0) {
     perror("ioctl");
     return -3;
   }
   memcpy(eth_header->h_source, ifr.ifr_hwaddr.sa_data, ETH_ALEN); // Set source MAC address
   eth_header->h_proto = htons(ETH_P_IP); // Set the protocol type to IP
-  
+
   // Set up the IP header
   ip_header->ihl = 5; // Internet Header Length
   ip_header->version = 4; // IPv4
   ip_header->tos = 0; // Type of Service
-  ip_header->tot_len = htons(dhcp_pkt->length + sizeof(struct iphdr) + sizeof(struct udphdr)); // Total length
+  ip_header->tot_len = htons(pkt->udp_data_length + sizeof(struct iphdr) + sizeof(struct udphdr)); // Total length
   ip_header->id = htons(54321); // Identification
   ip_header->frag_off = 0; // Fragment offset
   ip_header->ttl = 64; // Time to Live
   ip_header->protocol = IPPROTO_UDP; // Protocol
   ip_header->check = 0; // Checksum (calculated later)
 
-  // Extract yiaddr (your IP address) and server IP from the DHCP data
-  unsigned char* yiaddr = dhcp_data + 16; // yiaddr is at offset 16 in the DHCP payload
-  unsigned char* server_ip = dhcp_data + 20; // server IP (siaddr) is at offset 20 in the DHCP payload
+  // Extract source and destination IPs from the data
+  unsigned char* src_ip = data + 12; // Source IP is at offset 12 in the payload
+  unsigned char* dest_ip = data + 16; // Destination IP is at offset 16 in the payload
 
-  // Set the IP header source and destination addresses
-  ip_header->saddr = *(uint32_t*)server_ip; // Server IP address
-  ip_header->daddr = *(uint32_t*)yiaddr;    // Client IP address (yiaddr)
+  ip_header->saddr = *(uint32_t*)src_ip; // Source IP address
+  ip_header->daddr = *(uint32_t*)dest_ip; // Destination IP address
 
   // Calculate the IP checksum
   unsigned short* ip_header_words = (unsigned short*)ip_header;
@@ -116,21 +118,19 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   ip_header->check = ~checksum;
 
   // Set up the UDP header
-  udp_header->dest = htons(68);   // Send to DHCP client port   
-  udp_header->source = htons(67); // Send from DHCP server port
-  udp_header->len = htons(dhcp_pkt->length + sizeof(struct udphdr)); // UDP length
+  udp_header->source = htons(src_port); // Send from source port
+  udp_header->dest = htons(dest_port);   // Send to destination port
+  udp_header->len = htons(pkt->udp_data_length + sizeof(struct udphdr)); // UDP length
   udp_header->check = 0; // Checksum (optional, can be 0 for UDP over IPv4)
 
-  // Extract the target MAC address (chaddr) from the DHCP packet
   struct sockaddr_ll device = {0};
   device.sll_family = AF_PACKET;
   device.sll_protocol = htons(ETH_P_IP);
-  device.sll_ifindex = if_nametoindex(dhcp_pkt->iface);
+  device.sll_ifindex = if_nametoindex(pkt->iface_name);
   device.sll_halen = ETH_ALEN;
   memcpy(device.sll_addr, eth_header->h_dest, ETH_ALEN);
 
-  // Send the packet
-  if (sendto(persistent_sockfd_send, packet, packet_length, 0, (struct sockaddr*)&device, sizeof(device)) < 0) {
+  if (sendto(*sockfd, packet, packet_length, 0, (struct sockaddr*)&device, sizeof(device)) < 0) {
     perror("sendto");
     return -4;
   }
@@ -138,60 +138,64 @@ int send_dhcp_packet_with_iface(struct RawDhcpPacket* dhcp_pkt) {
   return 0;
 }
 
-void print_in_hex(struct RawDhcpPacket *result);
+int send_dhcp_packet_with_iface(struct RawPacket* dhcp_pkt) {
+  return send_packet_with_iface(&persistent_sockfd_dhcp_send, dhcp_pkt, 68, 67);
+}
 
-// Return DHCP packet and the interface name it was received on
-static int persistent_sockfd_recv = -1;
+int send_dns_packet_with_iface(struct RawPacket* dns_pkt) {
+  return send_packet_with_iface(&persistent_sockfd_dns_send, dns_pkt, 53, 53);
+}
 
-int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
-  static struct sockaddr_in addr;
+void print_in_hex(struct RawPacket *result);
+
+
+int setup_recv_socket(int *sockfd, int port) {
+  struct sockaddr_in addr;
+
+  if (*sockfd == -1) {
+    *sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (*sockfd < 0) {
+      perror("socket");
+      return -1;
+    }
+
+    int reuse = 1;
+    setsockopt(*sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    int on = 1;
+    setsockopt(*sockfd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(*sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      perror("bind");
+      close(*sockfd);
+      *sockfd = -1;
+      return -2;
+    }
+  }
+
+  return 0;
+}
+
+int recv_packet_with_iface(int *sockfd, int port, struct RawPacket* result) {
   static char ctrl_buf[1024];
   struct iovec iov;
   struct msghdr msg;
   struct cmsghdr *cmsg;
   struct in_pktinfo *pktinfo;
 
-  if (persistent_sockfd_recv == -1) {
-    // print_current_time("create socket");
-
-    persistent_sockfd_recv = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (persistent_sockfd_recv < 0) {
-      perror("socket");
-      return -1;
-    }
-
-    // print_current_time("set sock opt 1");
-    // Allow port reuse for debugging
-    int reuse = 1;
-    setsockopt(persistent_sockfd_recv, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    // print_current_time("set sock opt 2");
-
-    // Enable pktinfo retrieval
-    int on = 1;
-    setsockopt(persistent_sockfd_recv, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(67);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    // print_current_time("bind");
-
-    if (bind(persistent_sockfd_recv, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-      perror("bind");
-      close(persistent_sockfd_recv);
-      persistent_sockfd_recv = -1;
-      return -2;
-    }
+  if (setup_recv_socket(sockfd, port) < 0) {
+    return -1;
   }
-
-  // print_current_time("recvmsg");
 
   memset(&msg, 0, sizeof(msg));
   memset(result, 0, sizeof(*result));
 
-  iov.iov_base = result->data;
+  iov.iov_base = result->udp_data;
   iov.iov_len = MAX_PACKET_SIZE;
 
   msg.msg_iov = &iov;
@@ -199,7 +203,7 @@ int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
   msg.msg_control = ctrl_buf;
   msg.msg_controllen = sizeof(ctrl_buf);
 
-  if ((result->length = recvmsg(persistent_sockfd_recv, &msg, 0)) < 0) {
+  if ((result->udp_data_length = recvmsg(*sockfd, &msg, 0)) < 0) {
     perror("recvmsg");
     return -3;
   }
@@ -207,7 +211,7 @@ int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
   for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
     if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
       pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
-      if_indextoname(pktinfo->ipi_ifindex, result->iface);
+      if_indextoname(pktinfo->ipi_ifindex, result->iface_name);
       break;
     }
   }
@@ -215,11 +219,19 @@ int recv_dhcp_packet_with_iface(struct RawDhcpPacket* result) {
   return 0;
 }
 
-void print_in_hex(struct RawDhcpPacket *result)
+int recv_dhcp_packet_with_iface(struct RawPacket* result) {
+  return recv_packet_with_iface(&persistent_sockfd_dhcp_recv, 67, result);
+}
+
+int recv_dns_packet_with_iface(struct RawPacket* result) {
+  return recv_packet_with_iface(&persistent_sockfd_dns_recv, 53, result);
+}
+
+void print_in_hex(struct RawPacket *result)
 {
   // Print all data in result->data, output hexadecimal values and corresponding characters
   printf("Data in hexadecimal and corresponding characters:\n");
-  for (int i = 0; i < result->length; i++)
+  for (int i = 0; i < result->udp_data_length; i++)
   {
     if (i % 16 == 0)
     { // New line every 16 bytes
@@ -228,9 +240,9 @@ void print_in_hex(struct RawDhcpPacket *result)
         printf("  ");
         for (int j = i - 16; j < i; j++)
         {
-          if (result->data[j] >= 32 && result->data[j] <= 126)
+          if (result->udp_data[j] >= 32 && result->udp_data[j] <= 126)
           { // Only print visible characters
-            printf("%c ", result->data[j]);
+            printf("%c ", result->udp_data[j]);
           }
           else
           {
@@ -239,22 +251,22 @@ void print_in_hex(struct RawDhcpPacket *result)
         }
         printf("\n");
       }
-      printf("%02x ", result->data[i]); // Print hexadecimal value
+      printf("%02x ", result->udp_data[i]); // Print hexadecimal value
     }
     else
     {
-      printf("%02x ", result->data[i]); // Print hexadecimal value
+      printf("%02x ", result->udp_data[i]); // Print hexadecimal value
     }
   }
   // Print characters of the last line
-  if (result->length % 16 != 0)
+  if (result->udp_data_length % 16 != 0)
   {
     printf("  ");
-    for (int j = result->length - (result->length % 16); j < result->length; j++)
+    for (int j = result->udp_data_length - (result->udp_data_length % 16); j < result->udp_data_length; j++)
     {
-      if (result->data[j] >= 32 && result->data[j] <= 126)
+      if (result->udp_data[j] >= 32 && result->udp_data[j] <= 126)
       { // Only print visible characters
-        printf("%c ", result->data[j]);
+        printf("%c ", result->udp_data[j]);
       }
       else
       {

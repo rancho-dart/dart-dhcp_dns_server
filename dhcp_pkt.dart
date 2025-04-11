@@ -182,9 +182,9 @@ class DhcpPkt {
   }
 
   void sendDhcpPacket(Map<String, DhcpPool> pools, String iface, String clientMac, List<int> yiaddr, int messageType) {
-    final packet = calloc<RawDhcpPacket>();
+    final packet = calloc<RawPacket>();
     try {
-      final data = packet.ref.data;
+      final data = packet.ref.udpData;
 
       // Fill in the common DHCP packet fields
       data[0] = 2; // op: BOOTREPLY
@@ -259,12 +259,12 @@ class DhcpPkt {
       }
 
       // Set the length of the packet
-      packet.ref.length = offset;
+      packet.ref.udpDataLength = offset;
       for (int i = 0; i < IFNAMSIZ; i++) {
-        packet.ref.iface[i] = 0;
+        packet.ref.ifaceName[i] = 0;
       }
-      packet.ref.iface.setRange(0, iface.length, iface.codeUnits);
-      packet.ref.iface[iface.length] = 0; // Null-terminate the interface name
+      packet.ref.ifaceName.setRange(0, iface.length, iface.codeUnits);
+      packet.ref.ifaceName[iface.length] = 0; // Null-terminate the interface name
 
       // Send the DHCP packet
       final sendResult = dhcpCInterface.callSendDhcpPacket(packet);
@@ -342,10 +342,10 @@ class DhcpPkt {
     print('Client MAC: ${chaddr.map((e) => e.toRadixString(16).padLeft(2, '0')).join(':')}');
   }
 
-  DhcpPkt(Pointer<RawDhcpPacket> resultPointer) {
-    final ifaceArray = resultPointer.ref.iface;
-    final data = resultPointer.ref.data;
-    final length = resultPointer.ref.length;
+  DhcpPkt(Pointer<RawPacket> resultPointer) {
+    final ifaceArray = resultPointer.ref.ifaceName;
+    final data = resultPointer.ref.udpData;
+    final length = resultPointer.ref.udpDataLength;
 
     // Get the interface name as a string
     iface = getStringFromPointer(ifaceArray.sublist(0, IFNAMSIZ), IFNAMSIZ);

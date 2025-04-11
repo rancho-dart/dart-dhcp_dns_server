@@ -21,7 +21,7 @@
 
 interfaces:
   - name: ens32
-    dhcp_enabled: true
+    direction: downlink
     address_pool: 10.1.0.100-10.1.0.200
     domain: bj.cn
     gateway: 10.1.0.1
@@ -29,7 +29,7 @@ interfaces:
       - 10.1.0.1
       
   - name: ens37
-    dhcp_enabled: true
+    direction: uplink
     address_pool: 10.0.0.100-10.0.0.200
     domain: sh.cn
     gateway: 10.0.0.1
@@ -40,5 +40,8 @@ interfaces:
         ip: "10.0.0.99"
 
   - name: ens33
-    dhcp_enabled: false
+    direction: uplink
     domain: cn
+    dns_servers:
+      - 192.168.1.1
+        8.8.8.8

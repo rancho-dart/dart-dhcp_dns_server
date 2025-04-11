@@ -7,19 +7,19 @@ const int IFNAMSIZ = 16; // Typical interface name size
 const int MAX_PACKET_SIZE = 4096; // Maximum packet size
 
 // Define DhcpPacketResult structure
-base class RawDhcpPacket extends Struct {
+base class RawPacket extends Struct {
   @Array<Uint8>(IFNAMSIZ)
-  external Array<Uint8> iface;
+  external Array<Uint8> ifaceName;
 
   @Int32()
-  external int length;
+  external int udpDataLength;
 
   @Array<Uint8>(MAX_PACKET_SIZE)
-  external Array<Uint8> data;
+  external Array<Uint8> udpData;
 }
 
-typedef RawDhcpNative = Int32 Function(Pointer<RawDhcpPacket> result);
-typedef RawDhcp = int Function(Pointer<RawDhcpPacket> result);
+typedef RawDhcpNative = Int32 Function(Pointer<RawPacket> result);
+typedef RawDhcp = int Function(Pointer<RawPacket> result);
 
 class DhcpCInterface {
   final DynamicLibrary _dylib;
@@ -49,11 +49,11 @@ class DhcpCInterface {
     print(errorMessages[returnCode] ?? 'Failed to receive DHCP packet. Return code: $returnCode');
   }
 
-  int callRecvDhcpPacket(Pointer<RawDhcpPacket> resultPointer) {
+  int callRecvDhcpPacket(Pointer<RawPacket> resultPointer) {
     return _recvDhcpPacket(resultPointer);
   }
 
-  int callSendDhcpPacket(Pointer<RawDhcpPacket> resultPointer) {
+  int callSendDhcpPacket(Pointer<RawPacket> resultPointer) {
     return _sendDhcpPacket(resultPointer);
   }
 }
