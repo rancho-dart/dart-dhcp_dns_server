@@ -1,5 +1,3 @@
-import 'dart:io';
-
 Future<void> main() async {
   print('DNS Service is starting...');
 

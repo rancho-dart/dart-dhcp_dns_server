@@ -25,7 +25,7 @@
             "label": "Build Dart",
             "type": "shell",
             "command": "dart",
-            "args": ["compile", "exe", "dhcp_server.dart"],
+            "args": ["compile", "exe", "dhcp_service.dart"],
             "group": {
               "kind": "build",
               "isDefault": true

@@ -5,9 +5,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'dhcp_service.dart';
-import 'dns_service.dart'; // 导入 DNS 服务模块
-
 // It sets up a global error handler to catch and log all uncaught exceptions.
 void main() async {
   // Set up a global error handler to catch and log all uncaught exceptions

@@ -4,5 +4,6 @@
     "notebook.diff.overviewRuler": false,
     "editor.rulers": [
         
-    ]
+    ],
+    "remote.SSH.httpProxy": ""
 }
