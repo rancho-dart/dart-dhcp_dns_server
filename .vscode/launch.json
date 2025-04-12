@@ -5,7 +5,7 @@
             "name": "Dart",
             "type": "dart",
             "request": "launch",
-            "program": "${workspaceFolder}/dhcp_service.dart"
+            "program": "${workspaceFolder}/dns_service.dart"
         },
         {
             "name": "C Debug",

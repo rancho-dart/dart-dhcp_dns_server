@@ -29,7 +29,7 @@ interfaces:
       - 10.1.0.1
       
   - name: ens37
-    direction: uplink
+    direction: downlink
     address_pool: 10.0.0.100-10.0.0.200
     domain: sh.cn
     gateway: 10.0.0.1
@@ -44,4 +44,4 @@ interfaces:
     domain: cn
     dns_servers:
       - 192.168.1.1
-        8.8.8.8
+      - 8.8.8.8

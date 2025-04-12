@@ -1,27 +1,23 @@
 import 'package:yaml/yaml.dart';
 import 'dart:io';
 
+import 'common_routines.dart';
+import 'constants.dart';
+
 class DnsInterface {
   final String ifaceName;
+  final String direction;
   final String domain;
   final List<String> dnsServers;
 
   DnsInterface({
     required this.ifaceName,
+    required this.direction,
     required this.domain,
     required this.dnsServers,
   });
-
-  factory DnsInterface.fromYaml(Map yaml) {
-    return DnsInterface(
-      ifaceName: yaml['name'],
-      domain: yaml['domain'],
-      dnsServers: List<String>.from(yaml['dns_servers'] ?? []),
-    );
-  }
 }
 
-// todo: debug this
 Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
   Map<String, DnsInterface> dnsInterfaces = {};
 
@@ -54,12 +50,13 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
       throw Exception('DNS servers list cannot be empty.');
     }
     for (var server in dnsServers) {
-      if (server is! String || !RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(server)) {
+      if (isInvalidIp(server)) {
         throw Exception('Invalid DNS server address: $server');
       }
     }
     dnsInterfaces[interface['name']] = DnsInterface(
       ifaceName: interface['name'],
+      direction: direction,
       domain: domain,
       dnsServers: List<String>.from(dnsServers),
     );
@@ -67,19 +64,13 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
 
   // 全局合法性检查
   bool hasUplink = false;
+  String? uplinkDomain;
   for (var iface in dnsInterfaces.values) {
-    if (iface.domain.isEmpty) {
-      throw Exception('Interface ${iface.ifaceName} has an empty domain.');
-    }
-
-    if (iface.dnsServers.isEmpty) {
-      throw Exception('Interface ${iface.ifaceName} has no DNS servers configured.');
-    }
-
-    if (iface.domain.contains('uplink')) {
+    if (iface.direction == 'uplink') {
       if (hasUplink) {
         throw Exception('Multiple uplink interfaces found. Only one uplink is allowed.');
       }
+      uplinkDomain = iface.domain;
       hasUplink = true;
     }
   }
@@ -89,23 +80,13 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
   }
 
   // 检查所有 downlink 接口是否是 uplink 的子域
-  String? uplinkDomain;
   for (var iface in dnsInterfaces.values) {
-    if (iface.domain.contains('uplink')) {
-      uplinkDomain = iface.domain;
-      break;
-    }
-  }
-
-  if (uplinkDomain == null) {
-    throw Exception('No uplink domain found.');
-  }
-
-  for (var iface in dnsInterfaces.values) {
-    if (!iface.domain.contains('uplink') && !iface.domain.endsWith('.$uplinkDomain')) {
+    if (iface.direction == 'downlink' && (!iface.domain.endsWith('.$uplinkDomain') || iface.domain.replaceFirst('.$uplinkDomain', '').contains('.'))) {
       throw Exception('Downlink interface ${iface.ifaceName} domain ${iface.domain} is not a subdomain of the uplink domain $uplinkDomain.');
     }
   }
 
   return dnsInterfaces;
 }
+
+// final DnsInterfaces = loadDnsInterfaceConfig(CONFIG_FILE_NAME);
