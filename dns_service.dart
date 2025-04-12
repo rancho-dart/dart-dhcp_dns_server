@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:async';
 import 'constants.dart';
 import 'dns_service_config.dart';
@@ -43,6 +42,7 @@ Future<void> main() async {
               // 创建 DnsQueryHandler 实例
               final handler = DnsQueryHandler(
                 interfaceName: interface.name,
+                interfaceAddress: address.address,
                 domain: dnsInterfaces[interface.name]?.domain ?? '',
                 datagram: datagram,
               );

@@ -2,7 +2,6 @@ import 'package:yaml/yaml.dart';
 import 'dart:io';
 
 import 'common_routines.dart';
-import 'constants.dart';
 
 class DnsInterface {
   final String ifaceName;
