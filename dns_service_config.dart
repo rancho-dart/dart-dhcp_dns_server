@@ -4,13 +4,13 @@ import 'constants.dart';
 import 'common_routines.dart';
 
 class DnsInterface {
-  final String ifaceName;
+  final String name;
   final String direction;
   final String domain;
   final List<String> dnsServers;
 
   DnsInterface({
-    required this.ifaceName,
+    required this.name,
     required this.direction,
     required this.domain,
     required this.dnsServers,
@@ -54,7 +54,7 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
       }
     }
     dnsInterfaces[interface['name']] = DnsInterface(
-      ifaceName: interface['name'],
+      name: interface['name'],
       direction: direction,
       domain: domain,
       dnsServers: List<String>.from(dnsServers),
@@ -81,9 +81,17 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
   // 检查所有 downlink 接口是否是 uplink 的子域
   for (var iface in dnsInterfaces.values) {
     if (iface.direction == 'downlink' && (!iface.domain.endsWith('.$uplinkDomain') || iface.domain.replaceFirst('.$uplinkDomain', '').contains('.'))) {
-      throw Exception('Downlink interface ${iface.ifaceName} domain ${iface.domain} is not a subdomain of the uplink domain $uplinkDomain.');
+      throw Exception('Downlink interface ${iface.name} domain ${iface.domain} is not a subdomain of the uplink domain $uplinkDomain.');
     }
   }
+
+  // 添加 loopback 接口，这个接口将为DART路由器提供一个本地的DNS解析服务
+  dnsInterfaces['lo'] = DnsInterface(
+    name: 'lo',
+    direction: 'lookback',
+    domain: 'localhost',
+    dnsServers: ['127.0.0.1'],
+  );
 
   return dnsInterfaces;
 }

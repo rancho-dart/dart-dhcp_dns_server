@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'dart:async';
-import 'constants.dart';
 import 'dns_service_config.dart';
 import 'dns_query_handler.dart';
 
@@ -11,7 +10,7 @@ Future<void> main() async {
 
   try {
     // 获取所有网络接口
-    final interfaces = await NetworkInterface.list();
+    final interfaces = await NetworkInterface.list(includeLoopback: true);
     for (var interface in interfaces) {
       // 检查接口名称是否在配置中
       if (!dnsInterfaces.containsKey(interface.name)) {

@@ -1,6 +1,7 @@
 import 'package:dart_raw/raw.dart';
 import 'package:dart_dns/dart_dns.dart';
 import 'dart:typed_data'; // Ensure Uint8List is available
+import 'package:dart_dns/dart_dns.dart' show DnsNameCodec; // Ensure DnsNameCodec is available
 import 'dart:io'; // 添加用于 UDP 套接字的库
 import 'package:sqlite3/sqlite3.dart'; // 添加 SQLite 库
 import 'constants.dart'; // 添加常量文件
@@ -31,7 +32,33 @@ class DnsQueryHandler {
     required this.interfaceAddress, // 这是HomeGW的接口地址
   });
 
-  void processQuery() {
+  String decodeDnsName(Uint8List data, {int offset = 0}) {
+    final buffer = StringBuffer();
+    int currentOffset = offset;
+
+    while (currentOffset < data.length) {
+      final length = data[currentOffset];
+      if (length == 0) break; // 结束标志
+      currentOffset++;
+
+      if (length >= 0xC0) {
+        // 处理压缩指针
+        final pointer = ((length & 0x3F) << 8) | data[currentOffset];
+        currentOffset++;
+        buffer.write(decodeDnsName(data, offset: pointer));
+        break;
+      } else {
+        // 普通标签
+        buffer.write(String.fromCharCodes(data.sublist(currentOffset, currentOffset + length)));
+        currentOffset += length;
+        if (data[currentOffset] != 0) buffer.write('.');
+      }
+    }
+
+    return buffer.toString();
+  }
+
+  void processQuery() async {
     final rawReader = RawReader.withBytes(datagram.data);
     RawWriter rawWriter = RawWriter.withCapacity(512);
 
@@ -49,20 +76,45 @@ class DnsQueryHandler {
       DnsResourceRecord? answer;
       for (final query in dnsPacket.questions) {
         final fqdn = query.name.toLowerCase();
-        final isSameDomain = (fqdn.endsWith(interfaceDomain) && !fqdn.replaceFirst('.$interfaceDomain', '').contains('.'));
-        switch (query.type) {
-          case DnsRecordType.a:
-            // Handle A record queries
-            answer = handleQueryA(isSameDomain, fqdn);
-            break;
-          case DnsRecordType.txt:
-            // Handle TXT record queries
-            answer = handleQueryTxt(isSameDomain, fqdn);
-            break;
-          default:
-            print('Unsupported query type: ${query.type}');
-            break;
+
+        DnsInterface? destInterface;
+        DnsInterface? uplinkInterface;
+
+        int longestMatchLength = 0;
+
+        for (final dnsInterface in dnsInterfaces.values) {
+          if (dnsInterface.direction == 'uplink') {
+            uplinkInterface = dnsInterface;
+          }
+
+          final domain = dnsInterface.domain;
+          if (fqdn.endsWith(domain)) {
+            final matchLength = domain.length;
+            if (matchLength > longestMatchLength) {
+              longestMatchLength = matchLength;
+              destInterface = dnsInterface;
+            }
+          }
         }
+
+        if (destInterface == null) {
+          destInterface = uplinkInterface; // treat the uplink interface as the default
+        }
+
+        if (destInterface != null)
+          switch (query.type) {
+            case DnsRecordType.a:
+              // Handle A record queries
+              answer = await handleQueryA(destInterface, fqdn);
+              break;
+            case DnsRecordType.txt:
+              // Handle TXT record queries
+              answer = handleQueryTxt(destInterface, fqdn);
+              break;
+            default:
+              print('Unsupported query type: ${query.type}');
+              break;
+          }
       }
 
       if (answer != null) {
@@ -84,31 +136,90 @@ class DnsQueryHandler {
     sendDnsResponse(responseBytes.buffer.asUint8List());
   }
 
-  DnsResourceRecord? handleQueryA(bool isSameDomain, String fqdn) {
+  Future<DnsResourceRecord?> handleQueryA(DnsInterface destInterface, String fqdn) async {
     String? ip;
 
-    if (interfaceDirection == 'uplink') {
-      for (final dnsInterface in dnsInterfaces.values) {
-        if (dnsInterface.direction == "downlink" && fqdn.endsWith(dnsInterface.domain)) {
-          ip = interfaceAddress;
-          break;
+    switch (interfaceDirection) {
+      case 'lookback':
+        // 处理来自环回接口的查询。这个接口服务于本机上的DART路由器
+        if (destInterface.direction == 'uplink') {
+          // 使用 destInterface 中配置的 DNS SERVER 对 fqdn 进行解析
+          final dnsServer = destInterface.dnsServers.firstWhere((server) => server.isNotEmpty, orElse: () => throw Exception('No DNS server found'));
+
+          // Perform a custom DNS query using the specified DNS server
+          final dnsClient = UdpDnsClient(remoteAddress: InternetAddress(dnsServer));
+
+          final nameList = <String>[];
+          nameList.add(fqdn);
+
+          // some fqdn may be a CNAME, so we need to follow the CNAME chain
+          final packet = await dnsClient.lookupPacket(fqdn, type: InternetAddressType.IPv4, recordType: DnsRecordType.a);
+
+          for (var answer in packet.answers) {
+            if (nameList.contains(answer.name)) {
+              if (answer.type == DnsResourceRecord.typeIp4) {
+                ip = answer.data.toString();
+                break;
+              } else if (answer.type == DnsResourceRecord.typeCanonicalName) {
+                // DnsResourceRecord.decodeSelf()没有能够正确处理CNAME记录中的压缩指针。我们需要重载这个方法
+                // TODO: 待重载DnsResourceRecord.decodeSelf()
+                // 解析CNAME记录
+                final cname = decodeDnsName(Uint8List.fromList(answer.data));
+                nameList.add(cname);
+              }
+            }
+          }
+        } else if (destInterface.direction == 'downlink') {
+          ip = queryIpFromSqlite(fqdn);
+          if (ip == null) {
+            print('No IP found for $fqdn in interface: $interfaceName');
+          }
         }
-      }
 
-      if (ip == null) {
-        throw Exception('FQDN $fqdn does not belong to any known subdomain.');
-      }
+        break;
+      case 'uplink':
+        // 处理上行接口的查询
+        if (destInterface.direction == 'uplink') {
+          // 查询的是下行接口，理论上不应该收到这样的查询。抛出异常：这不是我负责的域
+          throw Exception('FQDN $fqdn does not belong to any subdomain maintained by me.');
+        } else if (destInterface.direction == 'downlink') {
+          // 查询的是下行接口，直接返回HomeGW的IP
+          ip = interfaceAddress;
+        }
+        break;
+      case 'downlink':
+        // 处理下行接口的查询
+        if (destInterface.name == interfaceName) {
+          // 查询的是同一个子域，直接返回DHCP SERVER分配的IP
+          ip = queryIpFromSqlite(fqdn);
+          if (ip == null) {
+            print('No IP found for $fqdn in interface: $interfaceName');
+          } else
+            ip = interfaceAddress;
+        }
+        break;
+      default:
+        throw Exception('Invalid interface "$interfaceName" direction: $interfaceDirection');
     }
 
-    // 从这里开始，查询方和被查询方都属于downlink（子域）
-    if (isSameDomain) {
-      // 同一个子域，返回DHCP SERVER分配的IP
-      // 查询 SQLite 数据库
-      ip = queryIpFromSqlite(fqdn);
-    } else {
-      // 不同子域，报文需由当前服务器转发，返回当前接口的IP
-      ip = interfaceAddress;
-    }
+    // if (interfaceDirection == 'uplink') {
+    //   if (destInterface?.direction == 'downlink') {
+    //     ip = interfaceAddress;
+    //   } else {
+    //     // 查询的不是下行接口，理论上不应该收到这样的查询。抛出异常：这不是我负责的域
+    //     throw Exception('FQDN $fqdn does not belong to any subdomain maintained by me.');
+    //   }
+    // }
+
+    // // 从这里开始，查询方和被查询方都属于downlink（子域）
+    // if (destInterface?.name == interfaceName) {
+    //   // 同一个子域，返回DHCP SERVER分配的IP
+    //   // 查询 SQLite 数据库
+    //   ip = queryIpFromSqlite(fqdn);
+    // } else {
+    //   // 不同子域，报文需由当前服务器转发，返回当前接口的IP
+    //   ip = interfaceAddress;
+    // }
 
     if (ip != null) {
       print('Returning IP for $fqdn: $ip');
@@ -154,10 +265,10 @@ class DnsQueryHandler {
     socket.close();
   }
 
-  DnsResourceRecord? handleQueryTxt(bool isSameDomain, String fqdn) {
+  DnsResourceRecord? handleQueryTxt(DnsInterface? destInterface, String fqdn) {
     String? txt;
 
-    if (isSameDomain) {
+    if (destInterface?.name == interfaceName) {
       // 查询 SQLite 数据库
       txt = queryTxtFromSqlite(fqdn);
 
