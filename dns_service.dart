@@ -10,8 +10,6 @@ Future<void> main() async {
   final completer = Completer<void>(); // 用于保持程序运行
 
   try {
-    final dnsInterfaces = loadDnsInterfaceConfig(CONFIG_FILE_NAME);
-
     // 获取所有网络接口
     final interfaces = await NetworkInterface.list();
     for (var interface in interfaces) {
@@ -42,8 +40,9 @@ Future<void> main() async {
               // 创建 DnsQueryHandler 实例
               final handler = DnsQueryHandler(
                 interfaceName: interface.name,
+                interfaceDirection: dnsInterfaces[interface.name]?.direction ?? '',
                 interfaceAddress: address.address,
-                domain: dnsInterfaces[interface.name]?.domain ?? '',
+                interfaceDomain: dnsInterfaces[interface.name]?.domain ?? '',
                 datagram: datagram,
               );
 

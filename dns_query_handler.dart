@@ -4,6 +4,7 @@ import 'dart:typed_data'; // Ensure Uint8List is available
 import 'dart:io'; // 添加用于 UDP 套接字的库
 import 'package:sqlite3/sqlite3.dart'; // 添加 SQLite 库
 import 'constants.dart'; // 添加常量文件
+import 'dns_service_config.dart'; // 添加 DNS 服务配置文件
 
 // 定义枚举类型 DnsResponseCode
 enum DnsResponseCode {
@@ -17,13 +18,15 @@ enum DnsResponseCode {
 
 class DnsQueryHandler {
   final String interfaceName;
-  final String domain;
-  final Datagram datagram;
+  final String interfaceDomain;
   final String interfaceAddress; // 新增字段
+  final String interfaceDirection;
+  final Datagram datagram;
 
   DnsQueryHandler({
     required this.interfaceName,
-    required this.domain,
+    required this.interfaceDomain,
+    required this.interfaceDirection,
     required this.datagram, // 这是接收到的 DNS 查询数据报，包含查询方IP和端口号
     required this.interfaceAddress, // 这是HomeGW的接口地址
   });
@@ -32,7 +35,7 @@ class DnsQueryHandler {
     final rawReader = RawReader.withBytes(datagram.data);
     RawWriter rawWriter = RawWriter.withCapacity(512);
 
-    print('Processing DNS query on interface: $interfaceName, Domain: $domain');
+    print('Processing DNS query on interface: $interfaceName, Domain: $interfaceDomain');
     print('Raw packet data: ${datagram.data}');
 
     final dnsPacket = DnsPacket();
@@ -40,32 +43,37 @@ class DnsQueryHandler {
 
     print('Decoded DNS query: ${dnsPacket.questions}');
 
-    DnsResourceRecord? answer;
-    for (final query in dnsPacket.questions) {
-      final fqdn = query.name.toLowerCase();
-      final isSameDomain = (fqdn.endsWith(domain));
-
-      switch (query.type) {
-        case DnsRecordType.a:
-          // Handle A record queries
-          answer = handleQueryA(isSameDomain, fqdn);
-          break;
-        case DnsRecordType.txt:
-          // Handle TXT record queries
-          answer = handleQueryTxt(isSameDomain, fqdn);
-          break;
-        default:
-          print('Unsupported query type: ${query.type}');
-          break;
-      }
-    }
-
     DnsResponseCode responsedCode;
-    if (answer != null) {
-      dnsPacket.answers.add(answer);
-      responsedCode = DnsResponseCode.noError;
-    } else {
-      responsedCode = DnsResponseCode.nameError;
+
+    try {
+      DnsResourceRecord? answer;
+      for (final query in dnsPacket.questions) {
+        final fqdn = query.name.toLowerCase();
+        final isSameDomain = (fqdn.endsWith(interfaceDomain) && !fqdn.replaceFirst('.$interfaceDomain', '').contains('.'));
+        switch (query.type) {
+          case DnsRecordType.a:
+            // Handle A record queries
+            answer = handleQueryA(isSameDomain, fqdn);
+            break;
+          case DnsRecordType.txt:
+            // Handle TXT record queries
+            answer = handleQueryTxt(isSameDomain, fqdn);
+            break;
+          default:
+            print('Unsupported query type: ${query.type}');
+            break;
+        }
+      }
+
+      if (answer != null) {
+        dnsPacket.answers.add(answer);
+        responsedCode = DnsResponseCode.noError; // NOERROR
+      } else {
+        responsedCode = DnsResponseCode.nameError; // NXDOMAIN: No such domain
+      }
+    } catch (e) {
+      print('Error processing DNS query: $e');
+      responsedCode = DnsResponseCode.refused; // REFUSED: Server refused
     }
 
     dnsPacket
@@ -79,11 +87,26 @@ class DnsQueryHandler {
   DnsResourceRecord? handleQueryA(bool isSameDomain, String fqdn) {
     String? ip;
 
+    if (interfaceDirection == 'uplink') {
+      for (final dnsInterface in dnsInterfaces.values) {
+        if (dnsInterface.direction == "downlink" && fqdn.endsWith(dnsInterface.domain)) {
+          ip = interfaceAddress;
+          break;
+        }
+      }
+
+      if (ip == null) {
+        throw Exception('FQDN $fqdn does not belong to any known subdomain.');
+      }
+    }
+
+    // 从这里开始，查询方和被查询方都属于downlink（子域）
     if (isSameDomain) {
+      // 同一个子域，返回DHCP SERVER分配的IP
       // 查询 SQLite 数据库
       ip = queryIpFromSqlite(fqdn);
     } else {
-      // 返回当前接口的 IP 地址
+      // 不同子域，报文需由当前服务器转发，返回当前接口的IP
       ip = interfaceAddress;
     }
 

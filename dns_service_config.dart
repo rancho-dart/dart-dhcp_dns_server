@@ -1,6 +1,6 @@
 import 'package:yaml/yaml.dart';
 import 'dart:io';
-
+import 'constants.dart';
 import 'common_routines.dart';
 
 class DnsInterface {
@@ -88,4 +88,4 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
   return dnsInterfaces;
 }
 
-// final DnsInterfaces = loadDnsInterfaceConfig(CONFIG_FILE_NAME);
+final dnsInterfaces = loadDnsInterfaceConfig(CONFIG_FILE_NAME);
