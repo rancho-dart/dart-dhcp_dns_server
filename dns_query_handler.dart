@@ -61,13 +61,14 @@ class DnsQueryHandler {
     final rawReader = RawReader.withBytes(datagram.data);
     RawWriter rawWriter = RawWriter.withCapacity(512);
 
+    print('-------------');
     print('Processing DNS query on interface: $interfaceName, Domain: $interfaceDomain');
-    print('Raw packet data: ${datagram.data}');
+    // print('Raw packet data: ${datagram.data}');
 
     final dnsPacket = DnsPacket();
     dnsPacket.decodeSelf(rawReader);
 
-    print('Decoded DNS query: ${dnsPacket.questions}');
+    // print('Decoded DNS query: ${dnsPacket.questions}');
 
     DnsResponseCode responsedCode;
 
@@ -81,7 +82,7 @@ class DnsQueryHandler {
 
         int longestMatchLength = 0;
 
-        for (final dnsInterface in dnsInterfaces.values) {
+        for (final dnsInterface in dnsInterfaces!.values) {
           if (dnsInterface.direction == 'uplink') {
             uplinkInterface = dnsInterface;
           }
@@ -245,6 +246,15 @@ class DnsQueryHandler {
         // 处理来自下行接口的查询
         if (destInterface.name == interfaceName) {
           // 查询的是同一个子域，直接返回DHCP SERVER分配的IP
+          final result = parseAsIp4Prefixed(fqdn);
+          if (result.success) {
+            // 如果FQDN是这样的：A.B.C.D.domain.com,且domain.com是目标接口的域，那么A.B.C.D是目标IP
+            ip = result.ip4;
+            dartSupported = true;
+            cname = 'dart-host.${fqdn}'; // 让cname以“dart-host.”开头，告诉查询方目标主机支持Dart
+            break;
+          }
+
           ip = queryIpFromSqlite(fqdn);
           dartSupported = queryDartSupportedStatusFromSqlite(fqdn);
           if (dartSupported!) {

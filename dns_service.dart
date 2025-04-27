@@ -2,18 +2,26 @@ import 'dart:io';
 import 'dart:async';
 import 'dns_service_config.dart';
 import 'dns_query_handler.dart';
+import 'constants.dart';
 
 Future<void> main() async {
   print('DNS Service is starting...');
+
+  dnsInterfaces = await loadDnsInterfaceConfig(CONFIG_FILE_NAME);
+  if (dnsInterfaces == null || dnsInterfaces!.isEmpty) {
+    print('No DNS interfaces found in configuration.');
+    return;
+  }
 
   final completer = Completer<void>(); // 用于保持程序运行
 
   try {
     // 获取所有网络接口
     final interfaces = await NetworkInterface.list(includeLoopback: true);
+    print('Starting DNS service:');
     for (var interface in interfaces) {
       // 检查接口名称是否在配置中
-      if (!dnsInterfaces.containsKey(interface.name)) {
+      if (!dnsInterfaces!.containsKey(interface.name)) {
         print('Skipping interface: ${interface.name} (not in configuration)');
         continue;
       }
@@ -25,7 +33,7 @@ Future<void> main() async {
           continue;
         }
 
-        print('Listening on interface: ${interface.name}, address: ${address.address}');
+        print('  Listening on interface: ${interface.name}, address: ${address.address}');
 
         // 为每个接口地址创建一个 UDP socket
         var socket = await RawDatagramSocket.bind(address, 53);
@@ -39,9 +47,9 @@ Future<void> main() async {
               // 创建 DnsQueryHandler 实例
               final handler = DnsQueryHandler(
                 interfaceName: interface.name,
-                interfaceDirection: dnsInterfaces[interface.name]?.direction ?? '',
+                interfaceDirection: dnsInterfaces![interface.name]?.direction ?? '',
                 interfaceAddress: address.address,
-                interfaceDomain: dnsInterfaces[interface.name]?.domain ?? '',
+                interfaceDomain: dnsInterfaces![interface.name]?.domain ?? '',
                 datagram: datagram,
               );
 

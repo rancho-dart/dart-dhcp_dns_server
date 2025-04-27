@@ -1,6 +1,5 @@
 import 'package:yaml/yaml.dart';
 import 'dart:io';
-import 'constants.dart';
 import 'common_routines.dart';
 
 class DnsInterface {
@@ -17,7 +16,7 @@ class DnsInterface {
   });
 }
 
-Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
+Future<Map<String, DnsInterface>> loadDnsInterfaceConfig(String configPath) async {
   Map<String, DnsInterface> dnsInterfaces = {};
 
   // 读取配置文件并初始化 DNS 服务
@@ -78,11 +77,47 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
     throw Exception('No uplink interface found. At least one uplink is required.');
   }
 
+  if (uplinkDomain == null) {
+    throw Exception('Uplink domain not defined.');
+  }
+
   // 检查所有 downlink 接口是否是 uplink 的子域
   for (var iface in dnsInterfaces.values) {
     if (iface.direction == 'downlink' && (!iface.domain.endsWith('.$uplinkDomain') || iface.domain.replaceFirst('.$uplinkDomain', '').contains('.'))) {
       throw Exception('Downlink interface ${iface.name} domain ${iface.domain} is not a subdomain of the uplink domain $uplinkDomain.');
     }
+  }
+
+  // 检查uplink接口的域名是否是Dart域，方法是解析dart-gateway.<domain>看能否成功，如果不行就向上退一级至父域，寻找父域的dart-gateway.<parent_domain>直到成功解析，或者退到根域
+  print('Looking for the first parent domain which supports Dart protocol:');
+  final uplinkDomainParts = uplinkDomain.split('.');
+  while (uplinkDomainParts.length > 0) {
+    final testDomain = 'dart-gateway.' + uplinkDomainParts.join('.');
+    try {
+      stdout.write('  Resolving ${testDomain}...');
+      // 使用 stdout.write 替代 print 以避免换行
+      final result = await InternetAddress.lookup(testDomain);
+      if (result.isNotEmpty && result[0].type == InternetAddressType.IPv4) {
+        print('OK');
+        break;
+      }
+      print('no reault.');
+    } catch (e) {
+      //ignore
+      print('failed.');
+    }
+
+    // remove the first element  from the list
+    uplinkDomainParts.removeAt(0);
+  } // end while
+
+  if (uplinkDomainParts.isEmpty) {
+    // 如果没有找到父域，则将uplinkDomain设置为根域，即当前的IPv4公网
+    print('  No parent domain which supports Dart protocol found. Treating root domain as the parent domain.');
+    uplinkDomain = '.';
+  } else {
+    uplinkDomain = uplinkDomainParts.join('.');
+    print('  Domain $uplinkDomain is the parent domain for Dart protocol.');
   }
 
   // 添加 loopback 接口，这个接口将为DART路由器提供一个本地的DNS解析服务
@@ -96,4 +131,4 @@ Map<String, DnsInterface> loadDnsInterfaceConfig(String configPath) {
   return dnsInterfaces;
 }
 
-final dnsInterfaces = loadDnsInterfaceConfig(CONFIG_FILE_NAME);
+Map<String, DnsInterface>? dnsInterfaces;
