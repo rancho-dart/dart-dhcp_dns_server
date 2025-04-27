@@ -9,29 +9,39 @@
 #include <resolv.h> // 用于DNS查询
 #include <netdb.h>  // 用于gethostbyname
 #include <yaml.h>
+#include <stdint.h>
+#include <net/ethernet.h>
+#include <netpacket/packet.h>
+#include <sys/ioctl.h>
+#include <net/if_arp.h>
+#include <stdbool.h>
+#include <time.h>
+#include "dart_header.h"
 
 #define DART_PROTOCOL 254
 #define BUFFER_SIZE 65536
 #define MAX_INTERFACES 10
+#define MAC_CACHE_SIZE 100
 
 // 定义接口配置结构体
 typedef struct {
     char name[32];
     char ip_address[32];
     char domain[32];
+    uint8_t mac_address[ETH_ALEN]; // 新增字段：MAC地址
 } interface_config_t;
+
+typedef struct {
+    struct in_addr ip;
+    uint8_t mac[ETH_ALEN];
+    time_t timestamp;
+} mac_cache_entry_t;
 
 interface_config_t interfaces[MAX_INTERFACES];
 int interface_count = 0;
+mac_cache_entry_t mac_cache[MAC_CACHE_SIZE];
+int mac_cache_count = 0;
 
-// 修改后的DART报文结构
-typedef struct {
-    uint8_t protocol_number; // 上层协议号
-    uint8_t dest_addr_len;   // 目标地址长度
-    uint8_t src_addr_len;    // 源地址长度
-    char *dest_addr;         // 目标地址（改为char*）
-    char *src_addr;          // 源地址（改为char*）
-} dart_packet_t;
 
 void load_config(const char *filename) {
     FILE *file = fopen(filename, "r");
@@ -89,6 +99,27 @@ void load_config(const char *filename) {
 
     yaml_parser_delete(&parser);
     fclose(file);
+
+    for (int i = 0; i < interface_count; i++) {
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock < 0) {
+            perror("Socket creation failed");
+            exit(1);
+        }
+
+        struct ifreq ifr;
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, interfaces[i].name, sizeof(ifr.ifr_name) - 1);
+
+        if (ioctl(sock, SIOCGIFHWADDR, &ifr) < 0) {
+            perror("Failed to get MAC address");
+            close(sock);
+            exit(1);
+        }
+
+        memcpy(interfaces[i].mac_address, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
+        close(sock);
+    }
 }
 
 // 解析DART报文
@@ -125,8 +156,8 @@ void free_dart_packet(dart_packet_t *packet) {
     }
 }
 
-uint32_t matchest_iface_ip(char *dest_addr) {
-    uint32_t best_match_ip = 0;
+int get_matchest_iface(char *dest_addr) {
+    int best_match_index = -1;
     size_t best_match_length = 0;
 
     for (int i = 0; i < interface_count; i++) {
@@ -138,17 +169,40 @@ uint32_t matchest_iface_ip(char *dest_addr) {
             strcmp(dest_addr + dest_addr_len - iface_domain_len, interfaces[i].domain) == 0) {
             if (iface_domain_len > best_match_length) {
                 best_match_length = iface_domain_len;
-                best_match_ip = inet_addr(interfaces[i].ip_address);
+                best_match_index = i;
             }
         }
     }
 
-    return best_match_ip;
+    return best_match_index;
 }
 
+// 计算IP头部校验和
+uint16_t calculate_checksum(uint16_t *header, int length) {
+    uint32_t sum = 0;
+
+    // 累加所有16位字
+    while (length > 1) {
+        sum += *header++;
+        length -= 2;
+    }
+
+    // 如果长度是奇数，处理最后一个字节
+    if (length == 1) {
+        sum += *(uint8_t *)header;
+    }
+
+    // 将高16位加到低16位
+    while (sum >> 16) {
+        sum = (sum >> 16) + (sum & 0xFFFF);
+    }
+
+    // 取反，得到校验和
+    return (uint16_t)(~sum);
+}
 
 // Forwarder函数，返回下一跳IP地址
-uint32_t forwarder(dart_packet_t *dart_packet) {
+uint32_t next_hop_for(dart_packet_t *dart_packet) {
     if (!dart_packet || !dart_packet->dest_addr) {
         fprintf(stderr, "Invalid DART packet or destination address\n");
         return 0; // 返回0表示查询失败
@@ -216,6 +270,81 @@ uint32_t forwarder(dart_packet_t *dart_packet) {
     return next_hop_ip;
 }
 
+bool find_mac_in_cache(struct in_addr ip, uint8_t *mac) {
+    time_t now = time(NULL);
+    for (int i = 0; i < mac_cache_count; i++) {
+        if (mac_cache[i].ip.s_addr == ip.s_addr) {
+            if (difftime(now, mac_cache[i].timestamp) < 300) { // 缓存有效期300秒
+                memcpy(mac, mac_cache[i].mac, ETH_ALEN);
+                return true;
+            } else {
+                // 缓存过期，移除条目
+                mac_cache[i] = mac_cache[--mac_cache_count];
+                i--;
+            }
+        }
+    }
+    return false;
+}
+
+void add_mac_to_cache(struct in_addr ip, uint8_t *mac) {
+    if (mac_cache_count < MAC_CACHE_SIZE) {
+        mac_cache[mac_cache_count].ip = ip;
+        memcpy(mac_cache[mac_cache_count].mac, mac, ETH_ALEN);
+        mac_cache[mac_cache_count].timestamp = time(NULL);
+        mac_cache_count++;
+    } else {
+        // 如果缓存已满，替换最旧的条目
+        int oldest_index = 0;
+        for (int i = 1; i < mac_cache_count; i++) {
+            if (mac_cache[i].timestamp < mac_cache[oldest_index].timestamp) {
+                oldest_index = i;
+            }
+        }
+        mac_cache[oldest_index].ip = ip;
+        memcpy(mac_cache[oldest_index].mac, mac, ETH_ALEN);
+        mac_cache[oldest_index].timestamp = time(NULL);
+    }
+}
+
+int get_mac_from_ip(struct in_addr ip, struct sockaddr_ll *mac_addr, const char *iface_name) {
+    if (find_mac_in_cache(ip, mac_addr->sll_addr)) {
+        return 0; // 从缓存中找到MAC地址
+    }
+
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("Socket creation failed");
+        return -1;
+    }
+
+    struct arpreq req;
+    memset(&req, 0, sizeof(req));
+
+    struct sockaddr_in *sin = (struct sockaddr_in *)&req.arp_pa;
+    sin->sin_family = AF_INET;
+    sin->sin_addr = ip;
+
+    strncpy(req.arp_dev, iface_name, sizeof(req.arp_dev) - 1); // 使用传入的接口名称
+
+    if (ioctl(sock, SIOCGARP, &req) < 0) {
+        perror("Failed to get ARP entry");
+        close(sock);
+        return -1;
+    }
+
+    close(sock);
+
+    if (req.arp_flags & ATF_COM) {
+        memcpy(mac_addr->sll_addr, req.arp_ha.sa_data, ETH_ALEN);
+        add_mac_to_cache(ip, mac_addr->sll_addr); // 将MAC地址添加到缓存
+        return 0;
+    } else {
+        fprintf(stderr, "ARP entry not found for IP: %s\n", inet_ntoa(ip));
+        return -1;
+    }
+}
+
 int main() {
     load_config("config.yaml");
 
@@ -226,48 +355,82 @@ int main() {
         printf("  Domain: %s\n", interfaces[i].domain);
     }
 
-    int raw_socket = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
-    if (raw_socket < 0) {
+    int sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+    if (sock < 0) {
         perror("Socket creation failed");
         return 1;
     }
 
     uint8_t buffer[BUFFER_SIZE];
-    struct sockaddr_in source_addr;
+    struct sockaddr_ll source_addr;
     socklen_t addr_len = sizeof(source_addr);
 
-    printf("Listening for IP packets...\n");
+    printf("Listening for IP packets on raw socket (AF_PACKET)...\n");
 
     while (1) {
-        ssize_t data_len = recvfrom(raw_socket, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&source_addr, &addr_len);
+        ssize_t data_len = recvfrom(sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&source_addr, &addr_len);
         if (data_len < 0) {
             perror("Failed to receive packet");
             continue;
         }
 
-        struct iphdr *ip_header = (struct iphdr *)buffer;
+        struct iphdr *ip_header = (struct iphdr *)(buffer + sizeof(struct ethhdr)); // 跳过以太网头部
 
         // 检查是否是DART报文
         if (ip_header->protocol == DART_PROTOCOL) {
             printf("DART packet captured. Processing...\n");
 
-            uint8_t *dart_data = buffer + (ip_header->ihl * 4); // 跳过IP头部
-            size_t dart_data_len = data_len - (ip_header->ihl * 4);
+            uint8_t *dart_data = buffer + sizeof(struct ethhdr) + (ip_header->ihl * 4); // 跳过以太网和IP头部
+            size_t dart_data_len = data_len - sizeof(struct ethhdr) - (ip_header->ihl * 4);
 
             dart_packet_t *dart_packet = parse_dart_packet(dart_data, dart_data_len);
             if (dart_packet) {
-                // 获取下一跳IP地址
-                uint32_t next_hop_ip = forwarder(dart_packet);
-                uint32_t local_ip = matchest_iface_ip(dart_packet->dest_addr);
+                // 获取匹配的接口索引
+                int iface_index = get_matchest_iface(dart_packet->dest_addr);
+                if (iface_index >= 0) {
+                    // 获取接口的IP和MAC地址
+                    uint32_t local_ip = inet_addr(interfaces[iface_index].ip_address);
+                    uint8_t *local_mac = interfaces[iface_index].mac_address;
 
-                // 修改目标IP地址
-                ip_header->daddr = next_hop_ip;
-                ip_header->saddr = local_ip;
+                    // 修改目标IP地址
+                    ip_header->daddr = next_hop_for(dart_packet);
+                    // 修改源IP地址
+                    ip_header->saddr = local_ip;
 
-                // 打印修改后的目标IP地址
-                struct in_addr addr;
-                addr.s_addr = next_hop_ip;
-                printf("Modified Destination IP: %s\n", inet_ntoa(addr));
+                    // 重新计算校验和
+                    ip_header->check = 0; // 清空校验和字段
+                    ip_header->check = calculate_checksum((uint16_t *)ip_header, ip_header->ihl * 4);
+
+                    // 更新以太网帧头部
+                    struct ethhdr *eth_header = (struct ethhdr *)buffer;
+
+                    // 获取目标IP地址对应的MAC地址
+                    struct sockaddr_ll target_mac;
+                    memset(&target_mac, 0, sizeof(target_mac));
+                    target_mac.sll_family = AF_PACKET;
+                    target_mac.sll_protocol = htons(ETH_P_IP);
+                    target_mac.sll_ifindex = source_addr.sll_ifindex; // 使用接收报文的接口
+
+                    struct in_addr dest_ip;
+                    dest_ip.s_addr = ip_header->daddr;
+
+                    if (get_mac_from_ip(dest_ip, &target_mac, interfaces[iface_index].name) == 0) {
+                        // 更新以太网帧头部的目标MAC地址
+                        memcpy(eth_header->h_dest, target_mac.sll_addr, ETH_ALEN);
+
+                        // 更新以太网帧头部的源MAC地址
+                        memcpy(eth_header->h_source, local_mac, ETH_ALEN);
+                    } else {
+                        fprintf(stderr, "Failed to resolve MAC address for IP: %s\n", inet_ntoa(dest_ip));
+                    }
+
+                    // 打印修改后的目标IP地址
+                    struct in_addr addr;
+                    addr.s_addr = ip_header->daddr;
+                    printf("Modified Destination IP: %s\n", inet_ntoa(addr));
+                } else {
+                    fprintf(stderr, "No matching interface found for destination: %s\n", dart_packet->dest_addr);
+                }
 
                 free_dart_packet(dart_packet);
             } else {
@@ -278,6 +441,6 @@ int main() {
         }
     }
 
-    close(raw_socket);
+    close(sock);
     return 0;
 }

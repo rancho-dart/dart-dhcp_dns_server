@@ -5,27 +5,66 @@
             "name": "Dart",
             "type": "dart",
             "request": "launch",
-            "program": "${workspaceFolder}/dns_service.dart"
+            "program": "${workspaceFolder}/dns_service.dart",
+            "preLaunchTask": "Build DNS Service"
         },
-        {
-            "name": "C Debug",
-            "request": "launch",
-            "type": "cppdbg",
-            "program": "${workspaceFolder}/recv_dhcp_iface.so",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": true,
-            "MIMode": "gdb",
-            "miDebuggerPath": "/usr/bin/gdb",
-            "preLaunchTask": "Build C Program"
-        }
+        // {
+        //     "name": "C Debug",
+        //     "request": "launch",
+        //     "type": "cppdbg",
+        //     "program": "${workspaceFolder}/recv_dhcp_iface.so",
+        //     "args": [],
+        //     "stopAtEntry": false,
+        //     "cwd": "${workspaceFolder}",
+        //     "environment": [],
+        //     "externalConsole": true,
+        //     "MIMode": "gdb",
+        //     "miDebuggerPath": "/usr/bin/gdb",
+        //     "preLaunchTask": "Build C Program"
+        // },
+        // {
+        //     "name": "Debug dns_service.c",
+        //     "type": "cppdbg",
+        //     "request": "launch",
+        //     "program": "${workspaceFolder}/dns_service.exe",
+        //     "args": [],
+        //     "stopAtEntry": false,
+        //     "cwd": "${workspaceFolder}",
+        //     "environment": [],
+        //     "externalConsole": false,
+        //     "MIMode": "gdb",
+        //     "miDebuggerPath": "/usr/bin/gdb",
+        //     "setupCommands": [
+        //         {
+        //             "description": "Enable pretty-printing for gdb",
+        //             "text": "-enable-pretty-printing",
+        //             "ignoreFailures": true
+        //         },
+        //         {
+        //             "description": "Set new console mode",
+        //             "text": "set new-console on",
+        //             "ignoreFailures": true
+        //         }
+        //     ],
+        //     "preLaunchTask": "Build DNS Service"
+        // }
     ],
     "compounds": [
+        // {
+        //   "name": "Dart and C Debug",
+        //   "configurations": ["Dart", "C Debug"]
+        // },
         {
-          "name": "Dart and C Debug",
-          "configurations": ["Dart", "C Debug"]
+            "name": "Debug Dart Forwarder",
+            "configurations": ["Debug dart_forwarder.c"]
+        },
+        {
+            "name": "Debug DHCP Service",
+            "configurations": ["Debug dhcp_service.c"]
+        },
+        {
+            "name": "Debug DNS Service",
+            "configurations": ["Debug dns_service.c"]
         }
     ]
 }

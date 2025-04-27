@@ -21,7 +21,7 @@ Future<void> main() async {
       for (var address in interface.addresses) {
         // 排除 IPv6 地址
         if (address.type != InternetAddressType.IPv4) {
-          print('Skipping address: ${address.address} (not IPv4)');
+          // print('Skipping address: ${address.address} (not IPv4)');
           continue;
         }
 

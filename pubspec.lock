@@ -44,10 +44,9 @@ packages:
   dart_dns:
     dependency: "direct main"
     description:
-      name: dart_dns
-      sha256: fa7b1fef5bac79342b1da49c0efd118d5f4db2a962a0bddbe8e45fb897f966d2
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/dns"
+      relative: true
+    source: path
     version: "0.1.4"
   dart_raw:
     dependency: transitive
